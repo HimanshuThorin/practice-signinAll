@@ -1,0 +1,817 @@
+import Utils from "../../Utils";
+import {
+  apiFailureMessage,
+  apiSuccessMessage,
+  httpConstants,
+} from "../../common/constants";
+import CompetitionEventSchema from "../../models/CompetitionEventSchema";
+import QuizSchema from "../../models/QuizSchema";
+import CompetitionRegistrationSchema from "../../models/CompetitionRegistrationSchema";
+import userSchema from "../../models/userSchema";
+import mongoose from "mongoose";
+import { object } from "yup";
+const awsUpload = require("../../../helper/aws-upload");
+var awsUploadHelper = new awsUpload();
+
+export default class Manager {
+  createCompetition = async (request) => {
+    if (!request) {
+      return Utils.error(
+        apiFailureMessage.INVALID_PARAMS,
+        httpConstants.RESPONSE_STATUS.FAILURE,
+        httpConstants.RESPONSE_CODES.FORBIDDEN
+      );
+    }
+    let eventObj = new CompetitionEventSchema(request);
+    let result = await eventObj.saveData();
+
+    return result;
+  };
+
+  getSavedCompetition = async (request) => {
+    if (!request) {
+      return Utils.error(
+        apiFailureMessage.INVALID_PARAMS,
+        httpConstants.RESPONSE_STATUS.FAILURE,
+        httpConstants.RESPONSE_CODES.FORBIDDEN
+      );
+    }
+    let result = await CompetitionEventSchema.findData({
+      userId: mongoose.Types.ObjectId(request.user.id),
+      isSaved: true,
+    }).populate("userId");
+    return result;
+  };
+
+  updateCompetition = async (request) => {
+    if (!request.findQuery || !request.updateQuery) {
+      return Utils.error(
+        apiFailureMessage.FIND_QUERY_UPDATE_QUERY,
+        httpConstants.RESPONSE_CODES.FORBIDDEN
+      );
+    }
+    console.log(request, "REQUSET");
+
+    const result = CompetitionEventSchema.findOneAndUpdateData(
+      request.findQuery,
+      request.updateQuery
+    );
+    // console.log(result, "result");
+    return result;
+  };
+
+  deleteCompetition = async (request) => {
+    if (!request) {
+      return Utils.error(
+        {},
+        apiFailureMessage.INVALID_PARAMS,
+        httpConstants.RESPONSE_CODES.FORBIDDEN
+      );
+    }
+    const data = CompetitionEventSchema.findOneAndUpdateData(
+      //checking isActive as false as cannot delete active competition.
+      { _id: request._id, isActive: false },
+      { isDeleted: true }
+    );
+    return data;
+  };
+
+  getAllCompetition = async (request) => {
+    if (!request) {
+      return Utils.error(
+        {},
+        apiFailureMessage.INVALID_PARAMS,
+        httpConstants.RESPONSE_CODES.FORBIDDEN
+      );
+    } //make a condition that date se late hua to isActive false ho jaye
+    console.log(request, "requst");
+    let matchQuery = "";
+    if (request.competitionType) {
+      matchQuery = { competitionType: request.query.competitionType };
+    } else {
+      matchQuery = { isDeleted: false, isSaved: false };
+    }
+    let registeredCompetitions;
+
+    if (request.user) {
+      registeredCompetitions =
+        await CompetitionRegistrationSchema.findAndAggregate([
+          {
+            $match: {
+              userId: mongoose.Types.ObjectId(request.user.id),
+              isDeleted: false,
+            },
+          },
+          { $project: { competitionId: 1, _id: 0 } },
+        ]);
+    }
+    console.log(registeredCompetitions, "REGISTERD");
+
+    let result = await CompetitionEventSchema.findAndAggregate([
+      { $match: matchQuery },
+      {
+        $lookup: {
+          from: "users",
+          localField: "userId",
+          foreignField: "_id",
+          as: "userId",
+        },
+      },
+      { $sort: { createdAt: -1 } },
+      // { $limit: request.page * 10 },
+    ]);
+
+    // await userSchema.populate(result, { path: "userId" })
+
+    function getDifference(result, registeredCompetitions) {
+      return result.filter((object1) => {
+        return !registeredCompetitions.some((object2) => {
+          return object1._id.toString() === object2.competitionId.toString();
+        });
+      });
+    }
+
+    let finalNonRegisteredCompetitions = getDifference(
+      result,
+      registeredCompetitions
+    );
+
+    return finalNonRegisteredCompetitions;
+  };
+
+  //get
+  getAllCompetitionWithoutAuth = async (request) => {
+    if (!request) {
+      return Utils.error(
+        {},
+        apiFailureMessage.INVALID_PARAMS,
+        httpConstants.RESPONSE_CODES.FORBIDDEN
+      );
+    }
+    let result = await CompetitionEventSchema.findAndAggregate([
+      { $match: { isSaved: false, isDeleted: false } },
+      {
+        $lookup: {
+          from: "users",
+          localField: "userId",
+          foreignField: "_id",
+          as: "userId",
+        },
+      },
+      { $sort: { createdAt: -1 } },
+    ]);
+    console.log(result, "REsudsfj");
+    return result;
+  };
+  //create quiz
+  createQuiz = async (request) => {
+    console.log(request, "request of quiz");
+    if (!request) {
+      return Utils.error(
+        apiFailureMessage.INVALID_PARAMS,
+        httpConstants.RESPONSE_STATUS.FAILURE,
+        httpConstants.RESPONSE_CODES.FORBIDDEN
+      );
+    }
+    let eventObj = new QuizSchema(request);
+    return await eventObj.saveData();
+  };
+
+  // update quiz questionWise
+  updateQuiz = async (request) => {
+    console.log(request);
+    if (!request) {
+      return Utils.error(
+        apiFailureMessage.INVALID_PARAMS,
+        httpConstants.RESPONSE_STATUS.FAILURE,
+        httpConstants.RESPONSE_CODES.FORBIDDEN
+      );
+    }
+    const result = await QuizSchema.updateOne(
+      {
+        competitionId: request.findQuery.competitionId,
+        "mcq._id": request.findQuery._id,
+      },
+      {
+        $set: {
+          "mcq.$.question": request.updateQuery.question,
+          "mcq.$.optionA": request.updateQuery.optionA,
+          "mcq.$.optionB": request.updateQuery.optionB,
+          "mcq.$.optionC": request.updateQuery.optionC,
+          "mcq.$.optionD": request.updateQuery.optionD,
+        },
+      }
+    );
+    return result;
+  };
+  //add New Question
+  addNewQuestion = async (request) => {
+    if (!request) {
+      return Utils.error(
+        apiFailureMessage.INVALID_PARAMS,
+        httpConstants.RESPONSE_STATUS.FAILURE,
+        httpConstants.RESPONSE_CODES.FORBIDDEN
+      );
+    }
+
+    let findResult = await QuizSchema.findOne({
+      competitionId: request.competitionId,
+    });
+
+    findResult.mcq.push(request.newQuestion); //pushing new object in the array and save that document.
+    findResult.saveData();
+    return findResult;
+  };
+
+  getQuiz = async (request) => {
+    console.log(request, "rewjfefjs");
+    if (!request) {
+      return Utils.error(
+        apiFailureMessage.INVALID_PARAMS,
+        httpConstants.RESPONSE_STATUS.FAILURE,
+        httpConstants.RESPONSE_CODES.FORBIDDEN
+      );
+    }
+    let ifRegistered = await CompetitionRegistrationSchema.findOne(request);
+    console.log(ifRegistered, "ifRgegisterd");
+    if (!ifRegistered) {
+      return Utils.error(
+        apiFailureMessage.NOT_REGISTERED,
+        httpConstants.RESPONSE_STATUS.FAILURE,
+        httpConstants.RESPONSE_CODES.FORBIDDEN
+      );
+    }
+
+    let result = await QuizSchema.findOneData({
+      competitionId: request.competitionId,
+    });
+    console.log(result, "result");
+    return result;
+  };
+  //delete quiz
+  deleteQuiz = async (request) => {
+    if (!request) {
+      return Utils.error(
+        {},
+        apiFailureMessage.INVALID_PARAMS,
+        httpConstants.RESPONSE_CODES.FORBIDDEN
+      );
+    }
+    const data = QuizSchema.findOneAndUpdateData(
+      { _id: request._id },
+      { isDeleted: true }
+    );
+    return data;
+  };
+
+  //Register for competition
+  competitionRegister = async (request) => {
+    console.log(request, "new request");
+    if (!request) {
+      return Utils.error(
+        apiFailureMessage.INVALID_PARAMS,
+        httpConstants.RESPONSE_STATUS.FAILURE,
+        httpConstants.RESPONSE_CODES.FORBIDDEN
+      );
+    }
+    let ifRegistered = await CompetitionRegistrationSchema.findOneData({
+      userId: mongoose.Types.ObjectId(request.userId),
+      competitionId: mongoose.Types.ObjectId(request.competitionId),
+      isDeleted: false,
+    });
+    console.log(ifRegistered, "ifRegistered");
+    if (request.checkTakePartButton === true && ifRegistered === null) {
+      console.log("himanshudufudfd");
+      return true;
+    }
+
+    // if(request.checkTakePartButton === true && ifRegistered){
+    //   console.log("gandalf the grey");
+    //   return ifRegistered
+    // }
+
+    if (ifRegistered && ifRegistered.isDeleted === false) {
+      return Utils.error(
+        apiFailureMessage.ALREADY_REGISTERD,
+        httpConstants.RESPONSE_STATUS.FAILURE,
+        httpConstants.RESPONSE_CODES.FORBIDDEN
+      );
+    }
+
+    let competitionRegister =
+      await CompetitionRegistrationSchema.findOneAndUpdateData(
+        {
+          userId: mongoose.Types.ObjectId(request.userId),
+          competitionId: mongoose.Types.ObjectId(request.competitionId),
+        },
+        request
+      );
+    console.log(competitionRegister, "REGISTERHUAHAIYE");
+    return competitionRegister;
+  };
+
+  // updateRegisterCompetition
+
+  updateRegisterCompetition = async (request) => {
+    console.log(request, "update request");
+    if (!request) {
+      return Utils.error(
+        apiFailureMessage.INVALID_PARAMS,
+        httpConstants.RESPONSE_STATUS.FAILURE,
+        httpConstants.RESPONSE_CODES.FORBIDDEN
+      );
+    }
+
+    let updatedResult = await CompetitionRegistrationSchema.updateMany(
+      {
+        competitionId: mongoose.Types.ObjectId(request.competitionId),
+      },
+      {
+        parameters: request.parameters,
+        totalMarksOfExam: request.totalMarksOfExam,
+        finalScore: request.finalScore,
+        isEvaluationStarted: request.isEvaluationStarted,
+      }
+    );
+    console.log(updatedResult, "updated");
+    return updatedResult;
+  };
+
+  //unregister
+
+  competitionUnregister = async (request) => {
+    if (!request) {
+      return Utils.error(
+        apiFailureMessage.INVALID_PARAMS,
+        httpConstants.RESPONSE_STATUS.FAILURE,
+        httpConstants.RESPONSE_CODES.FORBIDDEN
+      );
+    }
+
+    let competitionUnregister = await CompetitionRegistrationSchema.updateOne(
+      {
+        userId: mongoose.Types.ObjectId(request.userId),
+        competitionId: mongoose.Types.ObjectId(request.competitionId),
+        isSubmitted: false,
+      },
+      request
+    );
+
+    console.log(competitionUnregister, "UNREGISTERHAIYETO");
+    return competitionUnregister;
+  };
+
+  //submit response
+
+  submitResponse = async (request) => {
+    console.log(request, "REQUEST");
+    if (!request) {
+      return Utils.error(
+        apiFailureMessage.INVALID_PARAMS,
+        httpConstants.RESPONSE_STATUS.FAILURE,
+        httpConstants.RESPONSE_CODES.FORBIDDEN
+      );
+    }
+    let ifResponseSubmitted = await CompetitionRegistrationSchema.findOneData({
+      userId: mongoose.Types.ObjectId(request.userId),
+      competitionId: mongoose.Types.ObjectId(request.competitionId),
+      isDeleted: false,
+    });
+    console.log(ifResponseSubmitted, "ifresponse");
+
+    if (!ifResponseSubmitted) {
+      return Utils.error(
+        apiFailureMessage.NOT_REGISTERED,
+        httpConstants.RESPONSE_STATUS.FAILURE,
+        httpConstants.RESPONSE_CODES.FORBIDDEN
+      );
+    }
+    if (ifResponseSubmitted.isSubmitted === true) {
+      return Utils.error(
+        apiFailureMessage.ALREADY_SUBMITTED,
+        httpConstants.RESPONSE_STATUS.FAILURE,
+        httpConstants.RESPONSE_CODES.FORBIDDEN
+      );
+    }
+
+    let responseSubmit =
+      await CompetitionRegistrationSchema.findOneAndUpdateData(
+        {
+          userId: mongoose.Types.ObjectId(request.userId),
+          competitionId: mongoose.Types.ObjectId(request.competitionId),
+          isDeleted: false,
+        },
+        {
+          userBlogs: request.userBlogs,
+          userPortfolios: request.userPortfolios,
+          userProjects: request.userProjects,
+          userQuizResponses: request.userQuizResponses,
+          userSubjectiveResponses: request.userSubjectiveResponses,
+          isSubmitted: true,
+        }
+      );
+    console.log(responseSubmit, "responseSubmit");
+
+    return responseSubmit;
+  };
+
+  //evaluate response
+  //we have to check the competition type here, if competitiontype is quiz we will save and other phr alag tarike se.
+
+  evaluateResponse = async (request) => {
+    if (!request) {
+      return Utils.error(
+        apiFailureMessage.INVALID_PARAMS,
+        httpConstants.RESPONSE_STATUS.FAILURE,
+        httpConstants.RESPONSE_CODES.FORBIDDEN
+      );
+    }
+
+    let userResponses = await CompetitionRegistrationSchema.findOne({
+      userId: mongoose.Types.ObjectId(request.userId),
+      competitionId: mongoose.Types.ObjectId(request.competitionId),
+      isDeleted: false,
+      isSubmitted: true,
+    }).populate("competitionId", "competitionType");
+
+    //quiz responses case
+    if (userResponses.competitionId.competitionType === "Quiz") {
+      let correctResponses = await QuizSchema.findOne({
+        competitionId: request.competitionId,
+      });
+
+      let arr = userResponses.userQuizResponses.filter((item, index) => {
+        //removing the {} element
+        return index !== 0;
+      });
+
+      arr.sort(function (a, b) {
+        //sorting the array of objects if user randomly attempts questions.
+        var keyA = a.questionNo,
+          keyB = b.questionNo;
+        if (keyA < keyB) return -1;
+        if (keyA > keyB) return 1;
+        return 0;
+      });
+
+      let count = 0;
+      let arrayLength = correctResponses.mcq.length;
+
+      for (let i = 0; i < arrayLength; i++) {
+        if (correctResponses.mcq[i].correctanswer === arr[i].SelectedVAlue) {
+          count = count + correctResponses.mcq[i].Marks;
+        }
+      }
+
+      let result = await CompetitionRegistrationSchema.findOneAndUpdateData(
+        {
+          userId: mongoose.Types.ObjectId(request.userId),
+          competitionId: mongoose.Types.ObjectId(request.competitionId),
+        },
+        {
+          userQuizPoints: count,
+          correctQuizAnswers: correctResponses.mcq,
+          userQuizResponses: arr,
+          userSubjectiveResponses: request.userSubjectiveResponses,
+        }
+      );
+      console.log(result, "result");
+      return result;
+    }
+
+    // this is when the competition type is not quiz.
+    let result = CompetitionRegistrationSchema.findOneAndUpdateData(
+      {
+        userId: mongoose.Types.ObjectId(request.userId),
+        competitionId: mongoose.Types.ObjectId(request.competitionId),
+      },
+      request
+    );
+    console.log(result, "result");
+    return result;
+  };
+
+  //get result
+
+  getResult = async (request) => {
+    console.log(request, "request");
+    if (!request) {
+      return Utils.error(
+        apiFailureMessage.INVALID_PARAMS,
+        httpConstants.RESPONSE_STATUS.FAILURE,
+        httpConstants.RESPONSE_CODES.FORBIDDEN
+      );
+    }
+
+    let result = await CompetitionRegistrationSchema.findOneData({
+      userId: request.query.userId,
+      competitionId: request.query.competitionId,
+    });
+    return result;
+  };
+
+  //get Registered competition
+  getRegisteredEvents = async (request) => {
+    // console.log(request, "requesthai ye")
+    if (!request) {
+      return Utils.error(
+        apiFailureMessage.INVALID_PARAMS,
+        httpConstants.RESPONSE_STATUS.FAILURE,
+        httpConstants.RESPONSE_CODES.FORBIDDEN
+      );
+    }
+
+    let result = await CompetitionRegistrationSchema.findAndAggregate([
+      {
+        $match: {
+          userId: mongoose.Types.ObjectId(request.user.id),
+          isDeleted: false,
+        },
+      },
+      { $sort: { createdAt: -1 } },
+    ]);
+    // this is from stackOverflow, how to populate.
+    await CompetitionEventSchema.populate(result, { path: "competitionId" });
+    console.log(result, "RESTIISDFSDFDSf");
+    let date = new Date();
+
+    // Get year, month, and day part from the date
+    let year = date.toLocaleString("default", { year: "numeric" });
+    let month = date.toLocaleString("default", { month: "2-digit" });
+    let day = date.toLocaleString("default", { day: "2-digit" });
+
+    // Generate yyyy-mm-dd date string
+    let todaysFormattedDate = year + "-" + month + "-" + day;
+    console.log(todaysFormattedDate, "todaysFormatted da");
+
+    let currentTime =
+      new Date().getHours().toString() +
+      ":" +
+      new Date().getMinutes().toString();
+    console.log(currentTime, "currentTime");
+
+    result.map(async (item) => {
+      if (todaysFormattedDate < item.competitionId.startDate) {
+        item.status = "Upcoming";
+      } else if (todaysFormattedDate > item.competitionId.endDate) {
+        item.status = "Missed";
+      } else if (
+        todaysFormattedDate == item.competitionId.startDate &&
+        currentTime < item.competitionId.startTime
+      ) {
+        item.status = "Upcoming";
+      } else if (
+        todaysFormattedDate == item.competitionId.endDate &&
+        currentTime > item.competitionId.endTime
+      ) {
+        item.status = "Missed";
+      } else if (item.isSubmitted === true) {
+        item.status = "Attended";
+      } else {
+        item.status = "Ongoing";
+      }
+    });
+    console.log(result, "result");
+    return result;
+  };
+
+  //get Participants
+
+  getParticipants = async (request) => {
+    // console.log(request, "uoieoirueiwuriwueoi")
+    if (!request) {
+      return Utils.error(
+        apiFailureMessage.INVALID_PARAMS,
+        httpConstants.RESPONSE_STATUS.FAILURE,
+        httpConstants.RESPONSE_CODES.FORBIDDEN
+      );
+    }
+    let sortedQuery;
+    console.log(request.query, "query");
+    console.log(request.params, "params");
+    if (request.query.sorted == null || request.query.sorted == "undefined") {
+      sortedQuery = 1;
+    } else {
+      sortedQuery = Number(request.query.sorted);
+    }
+    let pageLimit;
+    if (request.query.limit == null || request.query.limit == "undefined") {
+      pageLimit = 1;
+    } else {
+      pageLimit = Number(request.query.limit);
+    }
+
+    console.log(sortedQuery, "sorted");
+    console.log(pageLimit, "pagelimit");
+
+    let result = await CompetitionRegistrationSchema.findAndAggregate([
+      { $match: { competitionId: mongoose.Types.ObjectId(request.params.id) } },
+      {
+        $lookup: {
+          from: "competitions",
+          localField: "competitionId",
+          foreignField: "_id",
+          as: "competitionId",
+        },
+      },
+
+      { $sort: { finalScore: sortedQuery } },
+      // { $limit: 3 * pageLimit }
+      {
+        $facet: {
+          metadata: [{ $count: "totalParticipants" }],
+          data: [{ $skip: (request.query.limit - 1) * 4 }, { $limit: 4 }],
+        },
+      },
+    ]);
+    // await CompetitionEventSchema.populate(result, { path: "competitionId" });
+    // console.log(result, "result");
+    return result;
+  };
+
+  //get Participant by Id
+
+  getParticipantById = async (request) => {
+    if (!request) {
+      return Utils.error(
+        apiFailureMessage.INVALID_PARAMS,
+        httpConstants.RESPONSE_STATUS.FAILURE,
+        httpConstants.RESPONSE_CODES.FORBIDDEN
+      );
+    }
+    let result = await CompetitionRegistrationSchema.findData({
+      _id: request.responseId, //this is the resposnse id
+    });
+    return result;
+  };
+
+  getCompetitionById = async (request) => {
+    if (!request) {
+      return Utils.error(
+        apiFailureMessage.INVALID_PARAMS,
+        httpConstants.RESPONSE_STATUS.FAILURE,
+        httpConstants.RESPONSE_CODES.FORBIDDEN
+      );
+    }
+    let result = await CompetitionEventSchema.findOneData({
+      _id: request.id, //this is the competitition id
+    }).populate("userId");
+    console.log(result, "rewsusldfj");
+    return result;
+  };
+
+  getCompetitionByUserId = async (request) => {
+    if (!request) {
+      return Utils.error(
+        apiFailureMessage.INVALID_PARAMS,
+        httpConstants.RESPONSE_STATUS.FAILURE,
+        httpConstants.RESPONSE_CODES.FORBIDDEN
+      );
+    }
+
+    let result = await CompetitionEventSchema.findAndAggregate([
+      {
+        $match: {
+          userId: mongoose.Types.ObjectId(request.user.id),
+          isSaved: false,
+        },
+      },
+      { $sort: { createdAt: -1 } },
+    ]);
+    await userSchema.populate(result, { path: "userId" });
+    return result;
+  };
+
+  getAllResults = async (request) => {
+    if (!request) {
+      return Utils.error(
+        apiFailureMessage.INVALID_PARAMS,
+        httpConstants.RESPONSE_STATUS.FAILURE,
+        httpConstants.RESPONSE_CODES.FORBIDDEN
+      );
+    }
+
+    let participants = await CompetitionRegistrationSchema.findAndAggregate([
+      {
+        $match: {
+          competitionId: mongoose.Types.ObjectId(request.competitionId),
+        },
+      },
+      { $sort: { finalScore: -1 } },
+    ]);
+    console.log(participants, "partici");
+
+    if (participants[participants.length - 1].finalScore === 0) {
+      return Utils.error(
+        apiFailureMessage.ALL_NOT_EVALUVATED,
+        httpConstants.RESPONSE_STATUS.FAILURE,
+        httpConstants.RESPONSE_CODES.FORBIDDEN
+      );
+    }
+
+    // result.sort(function (a, b) {     //sorting the array of objects if user randomly attempts questions.
+    //   var keyA = a.participantIndex,
+    //     keyB = b.participantIndex;
+    //   if (keyA < keyB) return -1;
+    //   if (keyA > keyB) return 1;
+    //   return 0;
+    // })
+
+    // console.log(result, "result");
+
+    // return result;
+  };
+
+  ////////////////////////////////////////////////////////////////////////////////////////////
+  deleteCompetition = async (request) => {
+    let result = await CompetitionEventSchema.deleteMany();
+    return result;
+  };
+  deleteQuiz = async (request) => {
+    let result = await QuizSchema.deleteMany();
+    return result;
+  };
+
+  deleteRegistration = async (request) => {
+    let result = await CompetitionRegistrationSchema.deleteMany();
+    return result;
+  };
+
+  // getAllResults = async (request)=>{
+  //   if (!request) {
+  //     return Utils.error(
+  //       apiFailureMessage.INVALID_PARAMS,
+  //       httpConstants.RESPONSE_STATUS.FAILURE,
+  //       httpConstants.RESPONSE_CODES.FORBIDDEN
+  //     );
+  //   }
+
+  //   let result = await CompetitionRegistrationSchema.findData({
+  //     competitionId : request.competitionId
+  //   })
+
+  //   result.sort(function (a, b) {     //sorting the array of objects if user randomly attempts questions.
+  //     var keyA = a.participantIndex,
+  //       keyB = b.participantIndex;
+  //     if (keyA < keyB) return -1;
+  //     if (keyA > keyB) return 1;
+  //     return 0;
+  //   })
+
+  //   console.log(result, "result");
+
+  //   return result;
+  // }
+}
+
+//  //saving sponsor's logo
+//  let url;
+//  {
+//    url = await awsUploadHelper.uploadImage(
+//      request.sponsorLogo,
+//      request.userId,
+//      "assets/jobs/sponsor-logos/"
+//    );
+//    if (!url.success) {
+//      throw {
+//        message: "something wrong",
+//      };
+//    }
+//  }
+//  request.sponsorLogo = url.url;
+
+//  // saving coSponsors Logo
+//  request.co_sponsors.map(async (item) => {
+//    let url;
+//    {
+//      url = await awsUploadHelper.uploadImage(
+//        item.logo,
+//        item.userId,
+//        "assets/jobs/company-logos/"
+//      );
+//      if (!url.success) {
+//        throw {
+//          message: "something wrong",
+//        };
+//      }
+//    }
+//    item.logo = url.url;
+//  })
+
+// //this function will convert the logo images into link and save in the database.
+// request.co_sponsors.map(async(item)=>{
+//   let url;
+//   {
+//     url = await awsUploadHelper.uploadImage(
+//       item.logo,
+//       item.userId,
+//       "assets/jobs/company-logos/"
+//     );
+//     if (!url.success) {
+//       throw {
+//         message: "something wrong",
+//       };
+//     }
+//   }
+//   item.logo = url.url;
+// })
